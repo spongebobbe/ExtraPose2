@@ -29,26 +29,22 @@ opt = {
     "action": "All",
     "camera_frame": True,
     "cameras_path": "data/h36m/metadata.xml",
-    "ckpt": "checkpoint/train/test",
+    "ckpt": "checkpoint/train/",
     "data_dir": "data/h36m/",
     "evaluateActionWise": True,
-    "exp": "test",
-    "is_train": True,
     "job": 8,
     "linear_size": 1024,
-    "load": "checkpoint/train/test/ckpt_last.pth.tar",
+    "load": "checkpoint/train/ckpt_last.pth.tar",
     "lr_gamma": 0.96,
     "max_norm": True,
     "n_inputs": 16,
     "num_stage": 2,
     "predict_14": False,
     "procrustes": True,
-    "resume": False,
-    "sample": False,
-    "test": False,
     "use_hg": False,
-    "actions": ["all",
-           "All",
+    "TRAIN_SUBJECTS" : [1,5,6,7,8],
+    "TEST_SUBJECTS" :[9,11],
+    "actions": [
            "Directions",
            "Discussion",
            "Eating",
@@ -63,34 +59,35 @@ opt = {
            "Waiting",
            "WalkDog",
            "Walking",
-           "WalkTogether"]
+           "WalkTogether"],
+      
 }
 from types import SimpleNamespace 
 opt = SimpleNamespace(**opt)
 print(opt)
 SUBJECT_IDS = [1,5,6,7,8,9,11]
-actions = data_utils.define_actions(opt.action)
+actions = data_utils.define_actions(opt.action, opt.actions)
 num_actions = len(actions)
 criterion = nn.MSELoss(reduction='mean').cuda() #criterion for loss function
 
-def load_data(opt):
+def read_load_data(opt):
     print(">>> loading data") 
     # Load camera parameters
     rcams = cameras.load_cameras(opt.cameras_path, SUBJECT_IDS)
      # Load 3d data and load (or create) 2d projections
-    train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_root_positions, test_root_positions = data_utils.read_3d_data(actions, opt.data_dir, opt.camera_frame, rcams, opt.predict_14)  
+    train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_root_positions, test_root_positions = data_utils.read_3d_data(actions, opt.data_dir, opt.camera_frame, rcams, opt.TRAIN_SUBJECTS, opt.TEST_SUBJECTS, opt.predict_14 )  
     # Read stacked hourglass 2D predictions if use_sh, otherwise use groundtruth 2D projections
     if opt.use_hg:
-        train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d = data_utils.read_2d_predictions(actions, opt.data_dir)
+        train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d = data_utils.read_2d_predictions(actions, opt.data_dir, opt.TRAIN_SUBJECTS, opt.TEST_SUBJECTS)
     else: 
-        train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d = data_utils.create_2d_data( actions, opt.data_dir, rcams )
+        train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d = data_utils.create_2d_data( actions, opt.data_dir, rcams, opt.TRAIN_SUBJECTS, opt.TEST_SUBJECTS)
 
     return  train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d
 
 
 def create_test_val_subsets(train_set_3d, train_set_2d):
     #create validation set from training set
-    test_abs = int(len(train_set_3d) * 0.80) #training set is composed by videos of cameras. i will take 20% videos for validation
+    test_abs = int(len(train_set_3d) * 0.80) 
     keys_val_subset = random.sample(train_set_3d.keys(),len(train_set_3d) - test_abs)
     train_subset_3d = {}
     train_subset_2d = {}
@@ -249,7 +246,7 @@ def evaluate_batches_test(opt,model,
     sqerr = (poses3d - dec_out)**2 # Squared error between prediction and expected output
     dists = np.zeros( (sqerr.shape[0], n_joints) ) # Array with L2 error per joint in mm
     dist_idx = 0
-    for k in np.arange(0, n_joints*3, 3):
+    for k in np.arange(0, n_joints*3, 3):get_all_batches
       # Sum across X,Y, and Z dimenstions to obtain L2 distance
       dists[:,dist_idx] = np.sqrt( np.sum( sqerr[:, k:k+3], axis=1 ))
       dist_idx = dist_idx + 1
@@ -344,7 +341,7 @@ def test_best_model(opt, best_config, best_result):
     model_state, optimizer_state = torch.load(checkpoint_path)
     best_trained_model.load_state_dict(model_state)
 
-    train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d = load_data(opt)
+    train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d = read_load_data(opt)
 
     best_trained_model.eval()
     print("{0:=^12} {1:=^6}".format("Action", "mm")) # line of 30 equal signs
@@ -462,15 +459,7 @@ def train(config):
         # wandb.log({ "loss_train": loss_train, "err_train": err_train, "step" :current_epoch})
         # wandb.log({ "current_lr": lr_now,  "step" :current_epoch})
 
-        str_model_params = "p_dropout=" + str(config.p_dropout) + "_" + "lr_init=" + str(config.lr)  + "_" + "batch_size="+ str(config.batch_size) + "_" + "n_epochs="+ str(config.epochs)+"_"
-        str_model = str_model_params +  'ckpt.pth.tar'
-        file_path = os.path.join(opt.ckpt, str_model)
-        torch.save({'epoch': current_epoch,
-                    'lr': lr_now,
-                    'step': glob_step,
-                    'err':err_train,
-                    'state_dict': model.state_dict(),
-                    'optimizer': optimizer.state_dict()}, file_path) 
+        
 
 
         # clear useless chache
@@ -509,6 +498,21 @@ def train(config):
         print("training epoch: [%d] val loss: %.3f val error: %.3f " % (current_epoch+1,loss_val , err_val ))
         wandb.log({ "loss_val": loss_val, "err_val": err_val, "loss_train": loss_train, "err_train": err_train, "step" :current_epoch, "current_lr": lr_now})
         
+        str_model_params = "p_dropout=" + str(config.p_dropout) + "_" + "lr_init=" + str(config.lr)  + "_" + "batch_size="+ str(config.batch_size) + "_" + "n_epochs="+ str(config.epochs)+"_"
+        str_model = str_model_params +  'ckpt.pth.tar'
+        file_path = os.path.join(opt.ckpt, str_model)
+        torch.save({'epoch': current_epoch,
+                    'lr_now': lr_now,
+                    'step': glob_step,
+                    'state_dict': model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'batch_size': config.batch_size,
+                    'lr': config.lr,
+                    'tot_epochs': config.epochs,
+                    'err_train':err_train,
+                    'err_val':err_val,
+                    'p_dropout': config.p_dropout}, file_path)
+                    
         #ENDS CURRENT EPOCH
         current_epoch = current_epoch + 1
         # clear useless chache

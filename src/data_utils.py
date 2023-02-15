@@ -17,8 +17,7 @@ import cdflib
 from numpy import linalg as LA
 
 # Human3.6m IDs for training and testing
-TRAIN_SUBJECTS = [1,5,6,7,8] #[9,11,6,7,8] 
-TEST_SUBJECTS  = [9,11] #[1, 5] 
+
 
 # Joints in H3.6M -- data has 32 joints, but only 17 that move; these are the indices.
 H36M_NAMES = ['']*32
@@ -166,7 +165,7 @@ def load_data( bpath, subjects, actions, dim=3 ):
 
       # print('Reading subject {0}, action {1}'.format(subj, action))
 
-      dpath = os.path.join(  bpath, 'S{0}'.format(subj), 'MyPoseFeatures/{0}D_Positions'.format(dim), '{0}*.cdf'.format(action) )
+      dpath = os.path.join(  bpath, 'S{0}/'.format(subj), 'MyPoseFeatures/{0}D_Positions/'.format(dim), '{0}*.cdf'.format(action) )
 #       dpath =  bpath + 'S{0}'.format(subj) + '/MyPoseFeatures/{0}D_positions'.format(dim) + '/{0}*.cdf'.format(action) 
       # print( dpath )
 
@@ -471,7 +470,7 @@ def deselect_joints(data, data_mean, dimensions_to_ignore):
 
   return orig_data
 
-def define_actions( action ):
+def define_actions( action, actions):
   """
   Given an action string, returns a list of corresponding actions.
 
@@ -482,10 +481,7 @@ def define_actions( action ):
   Raises
     ValueError: if the action is not a valid action in Human 3.6M
   """
-  actions = ["Directions","Discussion","Eating","Greeting",
-           "Phoning","Photo","Posing","Purchases",
-           "Sitting","SittingDown","Smoking","Waiting",
-           "WalkDog","Walking","WalkTogether"]
+
 
   if action == "All" or action == "all":
     return actions
@@ -525,7 +521,7 @@ def project_to_cameras( poses_set, cams, ncams=4 ):
   return t2d
 
 
-def read_2d_predictions( actions, data_dir ):
+def read_2d_predictions( actions, data_dir , TRAIN_SUBJECTS, TEST_SUBJECTS):
   """
   Loads 2d data from precomputed Stacked Hourglass detections
 
@@ -552,7 +548,7 @@ def read_2d_predictions( actions, data_dir ):
 
   return train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use
 
-def create_2d_data( actions, data_dir, rcams ):
+def create_2d_data( actions, data_dir, rcams, TRAIN_SUBJECTS, TEST_SUBJECTS ):
   """
   Creates 2d poses by projecting 3d poses with the corresponding camera
   parameters. Also normalizes the 2d poses
@@ -645,7 +641,7 @@ def add_noise(train_set, sigma):
     train_set[k] = train_set[k] + noise
   return train_set
 
-def read_3d_data( actions, data_dir, camera_frame, rcams, predict_14=False ):
+def read_3d_data( actions, data_dir, camera_frame, rcams,TRAIN_SUBJECTS, TEST_SUBJECTS, predict_14=False ):
   """
   Loads 3d poses, zero-centres and normalizes them
 
