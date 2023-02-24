@@ -113,10 +113,11 @@ def calculate_mean_bone_lengths(bone_lengths, subjects, action):
     
   return bone_lengths_final
 
-def standardize_bone_lengths(bone_lengths):
+def standardize_bone_lengths(bone_lengths_train, bone_lengths_test):
   
   #calculate mean and standard dev
-  bone_lengths_tmp = list(bone_lengths.values())
+  bone_lengths_tmp = list(bone_lengths_train.values())
+  bone_lengths_tmp.extend(list(bone_lengths_test.values()))
   bone_lengths_tmp = np.array(bone_lengths_tmp)
   mu = np.mean(bone_lengths_tmp, axis = 0)
   #mu = np.tile(mu, (bone_lengths_tmp.shape[0], 1))
@@ -124,10 +125,15 @@ def standardize_bone_lengths(bone_lengths):
   #stddev = np.tile(stddev, (bone_lengths_tmp.shape[0], 1))
 
   #standardize
-  bone_lengths_norm = {}
-  for key in bone_lengths.keys():  
-    bone_lengths_norm[ key ] = np.divide( (bone_lengths[key] - mu), stddev )
-  return bone_lengths_norm
+  bone_lengths_train_norm = {}
+  for key in bone_lengths_train.keys():  
+    bone_lengths_train_norm[ key ] = np.divide( (bone_lengths_train[key] - mu), stddev )
+
+  bone_lengths_test_norm = {}
+  for key in bone_lengths_test.keys():  
+    bone_lengths_test_norm[ key ] = np.divide( (bone_lengths_test[key] - mu), stddev )
+
+  return bone_lengths_train_norm, bone_lengths_test_norm
 
 def standardize_bone_lengths2(bone_lengths):
   
@@ -303,52 +309,7 @@ def normalization_stats(complete_data, dim, predict_14=False ):
   if dim == 2: 
     #actually they are now saying that the joint to eliminate is not neck/nose but spine. https://github.com/una-dinosauria/3d-pose-baseline/issues/185
     #but it's not a problem when using 2d projection.
-    dimensions_to_use    = np.where(np.array([x != '' and x != 'Neck/Nose' for x in H36M_NAMES]))[0]
-    dimensions_to_use    = np.sort( np.hstack( (dimensions_to_use*2, dimensions_to_use*2+1))) #np.hstack appends as columns
-    #if I want to eliminate marker 2 (because is empty= '')I need to eliminate its 3 coordinates from the data. 
-    # each row of the data is Xmarker1, Ymarker1, Zmarker1, ..., Xmarker32, Ymarker32, Zmarker32 
-    # so i need to delete  index 3, 4, 5  
-    dimensions_to_ignore = np.delete( np.arange(len(H36M_NAMES)*2), dimensions_to_use )
-  else: # dim == 3
-    dimensions_to_use = np.where(np.array([x != '' for x in H36M_NAMES]))[0]
-    dimensions_to_use = np.delete( dimensions_to_use, [0,7,9] if predict_14 else 0 )
-
-    dimensions_to_use = np.sort( np.hstack( (dimensions_to_use*3,
-                                             dimensions_to_use*3+1,
-                                             dimensions_to_use*3+2)))
-    dimensions_to_ignore = np.delete( np.arange(len(H36M_NAMES)*3), dimensions_to_use )
-
-  return data_mean, data_std, dimensions_to_ignore, dimensions_to_use
-
-
-
-def normalization_stats_new(complete_data, dim, predict_14=False ): 
-  #INSTEAD OF DELETING NECK NOSE I DELETE SPINE
-  """
-  Computes normalization statistics: mean and stdev, dimensions used and ignored
-
-  Args
-    complete_data: nxd np array with poses
-    dim. integer={2,3} dimensionality of the data
-    predict_14. boolean. Whether to use only 14 joints
-  Returns
-    data_mean: np vector with the mean of the data
-    data_std: np vector with the standard deviation of the data
-    dimensions_to_ignore: list of dimensions not used in the model
-    dimensions_to_use: list of dimensions used in the model
-  """
-  if not dim in [2,3]:
-    raise(ValueError, 'dim must be 2 or 3')
-
-  data_mean = np.mean(complete_data, axis=0)
-  data_std  =  np.std(complete_data, axis=0)
-
-  # Encodes which 17 (or 14) 2d-3d pairs we are predicting
-  dimensions_to_ignore = []
-  #THE PROBLEM IS THAT FOR 2D ELIMINATES NECK/NOSE WHILE FOR 3D ELIMINATES THE HIP (0)
-  if dim == 2: 
-    #actually they are now saying that the joint to eliminate is not neck/nose but spine. https://github.com/una-dinosauria/3d-pose-baseline/issues/185
-    #but it's not a problem when using 2d projection.
+    #dimensions_to_use    = np.where(np.array([x != '' and x != 'Neck/Nose' for x in H36M_NAMES]))[0]
     dimensions_to_use    = np.where(np.array([x != '' and x != 'Spine' for x in H36M_NAMES]))[0]
     dimensions_to_use    = np.sort( np.hstack( (dimensions_to_use*2, dimensions_to_use*2+1))) #np.hstack appends as columns
     #if I want to eliminate marker 2 (because is empty= '')I need to eliminate its 3 coordinates from the data. 
@@ -365,6 +326,8 @@ def normalization_stats_new(complete_data, dim, predict_14=False ):
     dimensions_to_ignore = np.delete( np.arange(len(H36M_NAMES)*3), dimensions_to_use )
 
   return data_mean, data_std, dimensions_to_ignore, dimensions_to_use
+
+
 
 
 
@@ -540,7 +503,7 @@ def read_2d_predictions( actions, data_dir , TRAIN_SUBJECTS, TEST_SUBJECTS):
   train_set = load_stacked_hourglass( data_dir, TRAIN_SUBJECTS, actions)
   test_set  = load_stacked_hourglass( data_dir, TEST_SUBJECTS,  actions)
 
-  complete_train = copy.deepcopy( np.vstack( train_set.values() ))
+  complete_train = copy.deepcopy( np.vstack(list(train_set.values()) ))
   data_mean, data_std,  dim_to_ignore, dim_to_use = normalization_stats( complete_train, dim=2 )
 
   train_set = normalize_data( train_set, data_mean, data_std, dim_to_use )
@@ -573,8 +536,14 @@ def create_2d_data( actions, data_dir, rcams, TRAIN_SUBJECTS, TEST_SUBJECTS ):
   train_set = project_to_cameras( train_set, rcams )
   test_set  = project_to_cameras( test_set, rcams )
 
+  '''
+  import src.viz_new as viz
+  p2d = train_set[(1, 'Directions', 'Directions 1..55011271.h5')][0,:]
+  ax1 = plt.axes();viz.show2Dpose( p2d, ax1)
+  '''
+
   # Compute normalization statistics.
-  complete_train = copy.deepcopy( np.vstack( train_set.values() ))
+  complete_train = copy.deepcopy( np.vstack( list(train_set.values()) ))
   data_mean, data_std, dim_to_ignore, dim_to_use = normalization_stats( complete_train, dim=2 )
 
   # Divide every dimension independently
@@ -583,8 +552,8 @@ def create_2d_data( actions, data_dir, rcams, TRAIN_SUBJECTS, TEST_SUBJECTS ):
 
   '''
   import src.viz_new as viz
-  p2d = train_set[(1, 'Directions', 'Directions 1..54138969.h5')][0,:]
-  ax1 = plt.axes();viz.show2Dpose( p2d, ax1)
+  p2d = train_set[(1, 'Directions', 'Directions 1..55011271.h5')][0,:]
+  ax1 = plt.axes();viz.show2D_norm_pose( p2d, ax1)
   '''
 
   return train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use
@@ -618,7 +587,7 @@ def create_2d_data_L( actions, data_dir, rcams ):
   train_set = add_noise(train_set, 20)
 
   # Compute normalization statistics.
-  complete_train = copy.deepcopy( np.vstack( train_set.values() ))
+  complete_train = copy.deepcopy( np.vstack(list( train_set.values()) ))
   data_mean, data_std, dim_to_ignore, dim_to_use = normalization_stats( complete_train, dim=2 )
 
   # Divide every dimension independently
@@ -641,7 +610,7 @@ def add_noise(train_set, sigma):
     train_set[k] = train_set[k] + noise
   return train_set
 
-def read_3d_data( actions, data_dir, camera_frame, rcams,TRAIN_SUBJECTS, TEST_SUBJECTS, predict_14=False ):
+def read_3d_data( actions, data_dir, camera_frame, rcams,TRAIN_SUBJECTS, TEST_SUBJECTS, predict_14=False, flag_bone_lengths = False ):
   """
   Loads 3d poses, zero-centres and normalizes them
 
@@ -679,7 +648,7 @@ def read_3d_data( actions, data_dir, camera_frame, rcams,TRAIN_SUBJECTS, TEST_SU
   p3d = train_set[(1, 'Directions', 'Directions 1..54138969.h5')][0,:]
   ax2 = plt.axes(projection='3d');viz.show3Dpose( p3d, ax2)
 
-  other cameras ex. 1, 'Directions', 'Directions 1..55011271.h5'
+   # other cameras ex. 1, 'Directions', 'Directions 1..55011271.h5'
   '''
     
   # Apply 3d post-processing (centering around root)
@@ -691,10 +660,19 @@ def read_3d_data( actions, data_dir, camera_frame, rcams,TRAIN_SUBJECTS, TEST_SU
   ax3 = plt.axes(projection='3d');viz.show3Dpose( p3d, ax3)
   '''
   #CALCULATE LENGTH 
-  #bone_lengths = calculate_length_notNormalized( train_set)
+  bone_lengths_train_norm = None
+  bone_lengths_test_norm = None
+
+  if flag_bone_lengths:
+    #calculate lengths for action directions
+    bone_lengths_train = calculate_length_notNormalized( train_set, TRAIN_SUBJECTS, action = 'Directions' )
+    bone_lengths_test = calculate_length_notNormalized( test_set, TEST_SUBJECTS, action = 'Directions' )
+    #normalize bone lengths for rows (mantain the proportion in a subject)
+    bone_lengths_train_norm, bone_lengths_test_norm  = standardize_bone_lengths(bone_lengths_train, bone_lengths_test)
+    # bone_lengths_test_norm = standardize_bone_lengths(bone_lengths_test)
 
   # Compute normalization statistics
-  complete_train = copy.deepcopy( np.vstack( train_set.values() ))
+  complete_train = copy.deepcopy( np.vstack(list(train_set.values() )))
   data_mean, data_std, dim_to_ignore, dim_to_use = normalization_stats( complete_train, dim=3, predict_14=predict_14 )
   
 
@@ -708,7 +686,7 @@ def read_3d_data( actions, data_dir, camera_frame, rcams,TRAIN_SUBJECTS, TEST_SU
   ax = plt.axes(projection='3d')
   viz.show3D_norm_pose( pose3d, ax)
   '''
-  return train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use, train_root_positions, test_root_positions
+  return train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use, train_root_positions, test_root_positions, bone_lengths_train_norm, bone_lengths_test_norm
 
 
 def read_3d_data_L( actions, data_dir, camera_frame, rcams, predict_14=False ):
@@ -764,7 +742,7 @@ def read_3d_data_L( actions, data_dir, camera_frame, rcams, predict_14=False ):
   bone_lengths_train = calculate_length_notNormalized( train_set, TRAIN_SUBJECTS, action = 'Directions' )
   bone_lengths_test = calculate_length_notNormalized( test_set, TEST_SUBJECTS, action = 'Directions' )
   # Compute normalization statistics
-  complete_train = copy.deepcopy( np.vstack( train_set.values() ))
+  complete_train = copy.deepcopy( np.vstack( list(train_set.values()) ))
   data_mean, data_std, dim_to_ignore, dim_to_use = normalization_stats( complete_train, dim=3, predict_14=predict_14 )
   
   #DATA ARE DIRECTLY IN MM
@@ -838,7 +816,7 @@ def read_3d_data_C2( actions, data_dir, camera_frame, rcams, predict_14=False ):
   bone_lengths_train = calculate_length_notNormalized( train_set, TRAIN_SUBJECTS, action = 'Directions' )
   bone_lengths_test = calculate_length_notNormalized( test_set, TEST_SUBJECTS, action = 'Directions' )
   # Compute normalization statistics
-  complete_train = copy.deepcopy( np.vstack( train_set.values() ))
+  complete_train = copy.deepcopy( np.vstack( list(train_set.values()) ))
   data_mean, data_std, dim_to_ignore, dim_to_use = normalization_stats( complete_train, dim=3, predict_14=predict_14 )
   
   #DATA ARE DIRECTLY IN MM

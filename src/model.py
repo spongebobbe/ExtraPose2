@@ -36,7 +36,7 @@ class Linear(nn.Module):
         y = self.relu(y)
         y = self.dropout(y)
 
-        out = x + y
+        out = x + y #residual
 
         return out
 
@@ -48,6 +48,7 @@ class LinearModel(nn.Module):
                 p_dropout,
                 linear_size=1024,
                 num_stage=2,
+                input_size = 32, #16x2 2d joints 8x3xsample in a window
                 ):
         super(LinearModel, self).__init__()
 
@@ -55,16 +56,19 @@ class LinearModel(nn.Module):
         self.p_dropout = p_dropout
         self.num_stage = num_stage
         self.batch_size = batch_size
+        self.input_size = input_size
         # 2d joints
-        self.input_size =  16 * 2
+        #self.input_size =  16 * 2
         # 3d joints
         self.predict_14 = predict_14
 
         self.output_size = 14 * 3 if predict_14 else 16 * 3
 
-        # process input to linear size
+        # preprocess input to linear size
         self.w1 = nn.Linear(self.input_size, self.linear_size)
         self.batch_norm1 = nn.BatchNorm1d(self.linear_size)
+        self.relu = nn.ReLU(inplace=True)
+        self.dropout = nn.Dropout(self.p_dropout)
 
         self.linear_stages = []
         for l in range(num_stage):
@@ -74,12 +78,11 @@ class LinearModel(nn.Module):
         # post processing
         self.w2 = nn.Linear(self.linear_size, self.output_size)
 
-        self.w3 = nn.Linear(self.linear_size,15)
+        #self.w3 = nn.Linear(self.linear_size,15)
 
-        self.w4 = nn.Linear(15,self.linear_size)
+        #self.w4 = nn.Linear(15,self.linear_size)
 
-        self.relu = nn.ReLU(inplace=True)
-        self.dropout = nn.Dropout(self.p_dropout)
+        
 
     def forward(self, x):
         # pre-processing
