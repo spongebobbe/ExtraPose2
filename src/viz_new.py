@@ -158,7 +158,7 @@ def show2D_norm_pose(channels, ax, lcolor="#3498db", rcolor="#e74c3c", add_label
   ax.get_xaxis().set_ticklabels([])
   ax.get_yaxis().set_ticklabels([])
 
-  RADIUS = 3# space around the subject
+  RADIUS = 1# space around the subject
   xroot, yroot = vals[0,0], vals[0,1]
   ax.set_xlim([-RADIUS+xroot, RADIUS+xroot])
   ax.set_ylim([-RADIUS+yroot, RADIUS+yroot])

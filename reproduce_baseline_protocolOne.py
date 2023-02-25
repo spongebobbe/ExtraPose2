@@ -41,9 +41,9 @@ opt = {
     "n_inputs": 16,
     "num_stage": 2,
     "predict_14": False,
-    "procrustes": True,
+    "procrustes": False,
     "use_hg": False,
-    "TRAIN_SUBJECTS" : [1,5,6,7,8],
+     "TRAIN_SUBJECTS" : [1,5,6,7,8],
     "TEST_SUBJECTS" :[9,11],
     "batch_size_test": 18944,
     "actions": [
@@ -76,34 +76,24 @@ def read_load_data(opt):
     print(">>> loading data") 
     # Load camera parameters
     rcams = cameras.load_cameras(opt.cameras_path, SUBJECT_IDS)
+    rcams_norm = None
+
+    if config.camera_params:
+        h = 1000 #h,w taken from human3.6 paper
+        w = 1000 
+        rcams_norm = cameras.normalize_camera_params(h,w,rcams)
+
      # Load 3d data and load (or create) 2d projections
-    train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_root_positions, test_root_positions, bone_lengths_train_norm, bone_lengths_test_norm = data_utils.read_3d_data(actions, opt.data_dir, opt.camera_frame, rcams, opt.TRAIN_SUBJECTS, opt.TEST_SUBJECTS, opt.predict_14 )  
+    train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_root_positions, test_root_positions,  bone_lengths_train, bone_lengths_test = data_utils.read_3d_data(actions, opt.data_dir, opt.camera_frame, rcams, opt.TRAIN_SUBJECTS, opt.TEST_SUBJECTS, opt.predict_14, flag_bone_lengths = config.bone_lengths )  
     # Read stacked hourglass 2D predictions if use_sh, otherwise use groundtruth 2D projections
     if opt.use_hg:
         train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d = data_utils.read_2d_predictions(actions, opt.data_dir, opt.TRAIN_SUBJECTS, opt.TEST_SUBJECTS)
     else: 
         train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d = data_utils.create_2d_data( actions, opt.data_dir, rcams, opt.TRAIN_SUBJECTS, opt.TEST_SUBJECTS)
 
-    return  train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d
+    return  train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d, rcams_norm, bone_lengths_train, bone_lengths_test
 
 
-def create_test_val_subsets(train_set_3d, train_set_2d):
-    #create validation set from training set
-    test_abs = int(len(train_set_3d) * 0.80) 
-    keys_val_subset = random.sample(train_set_3d.keys(),len(train_set_3d) - test_abs)
-    train_subset_3d = {}
-    train_subset_2d = {}
-    val_subset_3d = {}
-    val_subset_2d = {}
-    for key in train_set_3d.keys():
-        if key in keys_val_subset:
-            val_subset_3d[key] = train_set_3d[key] 
-            val_subset_2d[key] = train_set_2d[key]
-        else:
-            train_subset_3d[key] = train_set_3d[key] 
-            train_subset_2d[key] = train_set_2d[key]
-
-    return train_subset_3d, val_subset_3d, train_subset_2d, val_subset_2d
 
 def get_all_batches(opt,data_x, data_y, batch_size, training=True ):
     """
@@ -203,9 +193,9 @@ def evaluate_batches_test(opt,model,
   nbatches = len( encoder_inputs )
 
   # Loop through test examples
-  all_dists, start_time= [], time.time()
-  log_every_n_batches = 100
+  all_dists, start_time = [], time.time()
   loss = 0
+  log_every_n_batches = 100
   for i in range(nbatches):
 
     if current_epoch > 0 and (i+1) % log_every_n_batches == 0:
@@ -218,6 +208,7 @@ def evaluate_batches_test(opt,model,
     targets = Variable(dec_out.cuda())
 
     outputs = model(inputs)
+    step_loss_test = criterion(outputs, targets)
     
     # denormalize
     enc_in  = data_utils.unNormalizeData( enc_in,  data_mean_2d, data_std_2d, dim_to_ignore_2d )
@@ -227,7 +218,7 @@ def evaluate_batches_test(opt,model,
     # Keep only the relevant dimensions
     dtu3d = np.hstack( (np.arange(3), dim_to_use_3d) ) if not(opt.predict_14) else  dim_to_use_3d
 
-    dec_out = dec_out[:, dtu3d]
+    dec_out = dec_out[:, dtu3d] #dec_out is the ground thruth
     poses3d = poses3d[:, dtu3d]
 
     assert dec_out.shape[0] == batch_size
@@ -254,9 +245,10 @@ def evaluate_batches_test(opt,model,
 
     all_dists.append(dists)
     assert sqerr.shape[0] == batch_size
+    loss += float(step_loss_test)
 
   step_time = (time.time() - start_time) / nbatches
-  loss      = loss / nbatches
+  loss = loss / nbatches
 
   all_dists = np.vstack( all_dists )
 
@@ -264,7 +256,7 @@ def evaluate_batches_test(opt,model,
   joint_err = np.mean( all_dists, axis=0 )
   total_err = np.mean( all_dists )
 
-  return total_err, joint_err, step_time
+  return total_err, joint_err, step_time, loss
 
 def get_action_subset( poses_set, action ):
   """
@@ -331,48 +323,54 @@ def evaluate_batches(opt,
   return total_err
 
 
-def test_best_model(config, checkpoint_path):
+def  test_best_model( model,test_set_2d, test_set_3d, data_mean_3d, data_std_3d, dim_to_use_3d, dim_to_ignore_3d,
+              data_mean_2d, data_std_2d, dim_to_use_2d, dim_to_ignore_2d):
+    input_size = 32 #baseline modeline takes in input 16x2 2d joint coordinates
+    if config.camera_params == True:
+      input_size += 3 #camamera centers cx, cy + focus
 
-    best_trained_model = LinearModel(opt.batch_size_test,opt.predict_14, config.p_dropout, linear_size=opt.linear_size, num_stage=opt.num_stage)
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    best_trained_model.to(device)
-   
-    print(">>> loading ckpt from '{}'".format(checkpoint_path))
-    ckpt = torch.load(checkpoint_path)
-    best_trained_model.load_state_dict(ckpt['state_dict'])
-    #optimizer = torch.optim.Adam(best_trained_model.parameters(), lr = config.lr)
-    #optimizer.load_state_dict(ckpt['optimizer'])
-    #print(">>> ckpt loaded (epoch: {} | err: {})".format(start_epoch, err_best))
-    print(">>> ckpt loaded") #add info on the loaded checkpoint
+    if config.bone_lengths:
+      input_size += 15
 
-    train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d = read_load_data(opt)
+    model.eval()
 
-    best_trained_model.eval()
     print("{0:=^12} {1:=^6}".format("Action", "mm")) # line of 30 equal signs
     
     cum_err = 0
     record = ''
+    cum_loss = 0
+
+    s = ''
     for action in opt.actions:
-        with torch.no_grad():            
-            print("{0:<12} ".format(action), end="")
+
+        with torch.no_grad(): 
+
+            # print("{0:<12} ".format(action), end="")
+            s+="{0:<12} ".format(action)
+
             # Get 2d and 3d testing data for this action
             # Get 2d and 3d testing data for this action
             action_test_set_2d = get_action_subset( test_set_2d, action )
             action_test_set_3d = get_action_subset( test_set_3d, action )
-            encoder_inputs, decoder_outputs = get_all_batches(opt, action_test_set_2d, action_test_set_3d , opt.batch_size_test, training=False)
+            encoder_inputs, decoder_outputs = get_all_batches(opt, action_test_set_2d, action_test_set_3d ,opt.batch_size_test, training = False)
 
-            total_err, joint_err, step_time = evaluate_batches_test( opt, best_trained_model,
+            total_err, joint_err, step_time, loss = evaluate_batches_test( opt, model,
               data_mean_3d, data_std_3d, dim_to_use_3d, dim_to_ignore_3d,
               data_mean_2d, data_std_2d, dim_to_use_2d, dim_to_ignore_2d,
               encoder_inputs, decoder_outputs, opt.batch_size_test )
             cum_err = cum_err + total_err
+            cum_loss += loss
 
-            print("{0:>6.2f}".format(total_err))
 
+            # print("{0:>6.2f}".format(total_err))
+            s += ': '
+            s+= "{0:>6.2f}".format(total_err)
 
+    print(s)
     avg_error = cum_err/float(len(actions) )
+    avg_loss = cum_loss/float(len(actions) )
     
-    return avg_error
+    return avg_error, avg_loss
 
     
 
@@ -380,12 +378,19 @@ def train(config):
     wandb.init(config = config)
     # config = wandb.config
 
-    train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d = read_load_data(opt)
-    train_subset_3d, val_subset_3d, train_subset_2d, val_subset_2d = create_test_val_subsets(train_set_3d, train_set_2d)
+    input_size = 32 #baseline modeline takes in input 16x2 2d joint coordinates
+    if config.camera_params:
+      input_size += 3 #camamera centers cx, cy + focus
+
+    if config.bone_lengths:
+      input_size += 15
+
+    train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d, rcams_norm, bone_lengths_train, bone_lengths_test= read_load_data(opt)
+    # train_subset_3d, val_subset_3d, train_subset_2d, val_subset_2d = create_test_val_subsets(train_set_3d, train_set_2d)
     
     # CREATE MODEL
     print(">>> creating model")
-    model = LinearModel(config.batch_size_train,opt.predict_14, config.p_dropout, linear_size=opt.linear_size, num_stage=opt.num_stage)
+    model = LinearModel(config.batch_size_train,opt.predict_14, config.p_dropout, linear_size=opt.linear_size, num_stage=opt.num_stage, input_size = input_size)
     model = model.cuda()
     model.apply(weight_init)
 
@@ -397,7 +402,7 @@ def train(config):
     model.to(device)
 
     glob_step = 0
-    lr_init = lr=config.lr
+    lr_init = config.lr
     lr_now =lr_init
     # lr_decay = opt.lr_decay
     # before batch_size = 64 and lr_decay = 100'000
@@ -407,15 +412,6 @@ def train(config):
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr_init)
 
-    # Since step() should be invoked after each batch instead of after each epoch, 
-    # this number represents the total number of batches computed, not the total number of epochs computed. 
-    # When last_epoch=-1, the schedule is started from the beginning.
-    # if you decide to stop the training in the middle, then resume it, you can provide last_epoch parameter to schedular so that it start from where it was left off,
-    #  not from the beginning again.
-    # mynewscheduler = torch.optim.lr_scheduler.StepLR(myoptimizer,step_size=1, lr_gamma, last_epoch=myscheduler.last_epoch)
-    # mynewscheduler.last_epoch, mynewscheduler.get_lr()
-
-    # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer,gamma=lr_gamma, last_epoch = -1)
 
     cudnn.benchmark = True  #optimize when using fixed input
     current_epoch = 0
@@ -430,7 +426,7 @@ def train(config):
         # Optional
         wandb.watch(model)
 
-        encoder_inputs, decoder_outputs = get_all_batches(opt, train_subset_2d, train_subset_3d, config.batch_size_train, training=True )      
+        encoder_inputs, decoder_outputs = get_all_batches(opt, train_set_2d, train_set_3d, config.batch_size_train, training=True )      
         nbatches = len( encoder_inputs )
         print("There are {0} train batches".format( nbatches ))
         #LOOP THROUGH THE EPOCHS
@@ -472,90 +468,84 @@ def train(config):
         err_train = err_train/ current_steps
         print("training epoch: [%d] train loss: %.3f train error: %.3f " % (current_epoch+1,loss_train , err_train ))
         
-        # wandb.log({ "loss_train": loss_train, "err_train": err_train, "step" :current_epoch})
-        # wandb.log({ "current_lr": lr_now,  "step" :current_epoch})
-
+        wandb.log({ "loss_train": loss_train, "err_train": err_train}, step = current_epoch)
+        wandb.log({ "current_lr": lr_now},  step = current_epoch)
+      
         
-
-
+    
         # clear useless chache
         torch.cuda.empty_cache()
-    
-        model.eval()
-        # VALIDATION 
-        loss_val = 0.0
-        current_steps = 0
-        err_val = 0
-        encoder_inputs, decoder_outputs = get_all_batches(opt, val_subset_2d, val_subset_3d, config.batch_size_train, training=True )
-        nbatches = len( encoder_inputs )
-        print("There are {0} validation batches".format( nbatches ))
-        for i in range( nbatches ):
-            with torch.no_grad():
-                enc_in = torch.from_numpy(encoder_inputs[i]).float()
-                dec_out = torch.from_numpy(decoder_outputs[i]).float()            
-                inputs = Variable(enc_in.cuda())
-                targets = Variable(dec_out.cuda())
 
-                outputs = model(inputs)
-                step_loss_val = criterion(outputs, targets)
+        #TESTING (reload data, load saved checkpoint and test)
+        test_error, loss_test = test_best_model( model,test_set_2d, test_set_3d, data_mean_3d, data_std_3d, dim_to_use_3d, dim_to_ignore_3d,
+              data_mean_2d, data_std_2d, dim_to_use_2d, dim_to_ignore_2d)
 
-                step_err_val = evaluate_batches(opt,
-                data_mean_3d, data_std_3d, dim_to_use_3d, dim_to_ignore_3d, dec_out, outputs, config.batch_size_train)
-                
-                err_val += step_err_val               
-                loss_val  += float(step_loss_val)
-                
-                # ENDS CURRENT BATCH
-                current_steps += 1
-
-        loss_val = loss_val / current_steps
-        err_val = err_val/ current_steps
-
-        print("training epoch: [%d] val loss: %.3f val error: %.3f " % (current_epoch+1,loss_val , err_val ))
-        wandb.log({ "loss_val": loss_val, "err_val": err_val, "loss_train": loss_train, "err_train": err_train, "current_lr": lr_now}, step= current_epoch)
-        
-        str_model_params = "p_dropout=" + str(config.p_dropout) + "_" + "lr_init=" + str(config.lr)  + "_" + "batch_size="+ str(config.batch_size_train) + "_" + "n_epochs="+ str(config.epochs)+"_"
-        str_model = str_model_params +  'ckpt.pth.tar'
-        file_path = os.path.join(opt.ckpt, str_model)
-        torch.save({'epoch': current_epoch,
-                    'lr_now': lr_now,
-                    'step': glob_step,
-                    'state_dict': model.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'batch_size': config.batch_size_train,
-                    'lr': config.lr,
-                    'tot_epochs': config.epochs,
-                    'err_train':err_train,
-                    'err_val':err_val,
-                    'p_dropout': config.p_dropout}, file_path)
-                    
+        wandb.log({"err_test":test_error}, step = current_epoch)
+        wandb.log({"loss_test":loss_test}, step = current_epoch)
+        torch.cuda.empty_cache()
+        print("finished testing")
         #ENDS CURRENT EPOCH
         current_epoch = current_epoch + 1
-        # clear useless chache
-        torch.cuda.empty_cache()
+
         
     print("Finished Training")
+
+    str_model_params = "p_dropout=" + str(config.p_dropout) + "_" + "lr_init=" + str(config.lr)  + "_" + "batch_size="+ str(config.batch_size_train) + "_" + "n_epochs="+ str(config.epochs)+"_"
+    str_model = str_model_params +  'ckpt.pth.tar'
+    file_path = os.path.join(opt.ckpt, str_model)
+    '''
+    torch.save({'epoch': current_epoch,
+                'lr_now': lr_now,
+                'step': glob_step,
+                'state_dict': model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'batch_size': config.batch_size_train,
+                'lr': config.lr,
+                'tot_epochs': config.epochs,
+                'err_train':err_train,
+                'p_dropout': config.p_dropout}, file_path)
+  '''                
      
-    #TESTING (reload data, load saved checkpoint and test)
-    test_error = test_best_model(config, file_path)
-    wandb.log({"err_test":test_error}, step = current_epoch)
+    
 
 
-if __name__ == "__main__":  
+if __name__ == "__main__": 
+  
   config={}
+
   print("START")
   print(sys.argv)
   config["batch_size_train"] = int(sys.argv[1].split("=")[1])
-  config["epochs"] = int(sys.argv[2].split("=")[1])
-  config["lr"] = float(sys.argv[3].split("=")[1])
-  config["p_dropout"] = float(sys.argv[4].split("=")[1])
+  config["camera_params"] = bool(int(sys.argv[2].split("=")[1]))
+  config["bone_lengths"] =bool(int(sys.argv[3].split("=")[1]))
+  config["directional_loss"] = bool(int(sys.argv[4].split("=")[1]))
+  config["epochs"] = int(sys.argv[5].split("=")[1])
+  config["lr"] = float(sys.argv[6].split("=")[1])
+  config["p_dropout"] = float(sys.argv[7].split("=")[1])
+
   config = SimpleNamespace(**config)
   print(config)
 
   train(config)
+ 
+# usage python reproduce_baseline.py batch_size=46720 epochs=5 lr=0.001 p_dropout=0.5 
 
-  # usage python train.py batch_size=46720 epochs=0 lr=0.001 p_dropout=0.5
+# to debug locally
+'''
+config={}
+config["batch_size_train"] = 64
+config["epochs"] = 5
+config["lr"] = 0.001
+config["p_dropout"] = 0.5
+config["camera_params"] = False
+config["bone_lengths"] =False
+config["directional_loss"] = False
+config = SimpleNamespace(**config)
+print(config)
 
+train(config)
+'''
 
 
 # 47040 SI SPACCA CON 48320
+# 46720

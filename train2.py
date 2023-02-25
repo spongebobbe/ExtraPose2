@@ -21,6 +21,7 @@ import src.cameras as cameras
 import src.utils as utils
 import src.procrustes as procrustes
 import src.viz_new as viz
+import wandb
 
 #FIXED SETTINGS
 opt = {
@@ -34,15 +35,17 @@ opt = {
     "job": 8,
     "linear_size": 1024,
     "load": "checkpoint/train/ckpt_last.pth.tar",
-    "lr_gamma": 0.96,
+    "lr_gamma": 0.96,  #decay rate with batch size of 64(empirical data from a simple yet effective...)
+    # "lr_decay": 100000, #step size with batch size of 64 ( (empirical data from a simple yet effective...))
     "max_norm": True,
     "n_inputs": 16,
     "num_stage": 2,
     "predict_14": False,
     "procrustes": True,
     "use_hg": False,
-    "TRAIN_SUBJECTS" : [1,5,6,7,8],
+     "TRAIN_SUBJECTS" : [1,5,6,7,8],
     "TEST_SUBJECTS" :[9,11],
+    "batch_size_test": 18944,
     "actions": [
            "Directions",
            "Discussion",
@@ -58,7 +61,8 @@ opt = {
            "Waiting",
            "WalkDog",
            "Walking",
-           "WalkTogether"]
+           "WalkTogether"],
+      
 }
 from types import SimpleNamespace 
 opt = SimpleNamespace(**opt)
@@ -66,7 +70,7 @@ print(opt)
 SUBJECT_IDS = [1,5,6,7,8,9,11]
 actions = data_utils.define_actions(opt.action, opt.actions)
 num_actions = len(actions)
-
+criterion = nn.MSELoss(reduction='mean').cuda() #criterion for loss function
 
 def read_load_data(opt):
     print(">>> loading data") 
@@ -78,24 +82,10 @@ def read_load_data(opt):
     if opt.use_hg:
         train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d = data_utils.read_2d_predictions(actions, opt.data_dir, opt.TRAIN_SUBJECTS, opt.TEST_SUBJECTS)
     else: 
-        train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d = data_utils.create_2d_data( actions, opt.data_dir, rcams, opt.TRAIN_SUBJECTS, opt.TEST_SUBJECTS )
+        train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d = data_utils.create_2d_data( actions, opt.data_dir, rcams, opt.TRAIN_SUBJECTS, opt.TEST_SUBJECTS)
 
     return  train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d
 
-
-def get_action_subset( poses_set, action ):
-  """
-  Given a preloaded dictionary of poses, load the subset of a particular action
-
-  Args
-    poses_set: dictionary with keys k=(subject, action, seqname),
-      values v=(nxd matrix of poses)
-    action: string. The action that we want to filter out
-  Returns
-    poses_subset: dictionary with same structure as poses_set, but only with the
-      specified action.
-  """
-  return {k:v for k, v in poses_set.items() if k[1] == action} 
 
 def get_all_batches(opt,data_x, data_y, batch_size, training=True ):
     """
@@ -159,6 +149,7 @@ def get_all_batches(opt,data_x, data_y, batch_size, training=True ):
 
     return encoder_inputs, decoder_outputs
 
+
 def evaluate_batches_test(opt,model,
   data_mean_3d, data_std_3d, dim_to_use_3d, dim_to_ignore_3d,
   data_mean_2d, data_std_2d, dim_to_use_2d, dim_to_ignore_2d,
@@ -203,8 +194,6 @@ def evaluate_batches_test(opt,model,
     
     enc_in = torch.from_numpy(encoder_inputs[i]).float()
     dec_out = torch.from_numpy(decoder_outputs[i]).float()
-
-    
 
     inputs = Variable(enc_in.cuda())
     targets = Variable(dec_out.cuda())
@@ -258,10 +247,74 @@ def evaluate_batches_test(opt,model,
 
   return total_err, joint_err, step_time
 
+def get_action_subset( poses_set, action ):
+  """
+  Given a preloaded dictionary of poses, load the subset of a particular action
+
+  Args
+    poses_set: dictionary with keys k=(subject, action, seqname),
+      values v=(nxd matrix of poses)
+    action: string. The action that we want to filter out
+  Returns
+    poses_subset: dictionary with same structure as poses_set, but only with the
+      specified action.
+  """
+  return {k:v for k, v in poses_set.items() if k[1] == action} 
+
+def evaluate_batches(opt,
+  data_mean_3d, data_std_3d, dim_to_use_3d, dim_to_ignore_3d,
+  dec_out, outputs, batch_size):
+  
+  n_joints = 17 if not(opt.predict_14) else 14
+
+  all_dists = []
+    
+  # denormalize
+  dec_out2 = data_utils.unNormalizeData( dec_out, data_mean_3d, data_std_3d, dim_to_ignore_3d )
+  poses3d = data_utils.unNormalizeData( outputs.data.cpu().numpy(), data_mean_3d, data_std_3d, dim_to_ignore_3d )
+
+  # Keep only the relevant dimensions
+  dtu3d = np.hstack( (np.arange(3), dim_to_use_3d) ) if not(opt.predict_14) else  dim_to_use_3d
+
+  dec_out2 = dec_out2[:, dtu3d]
+  poses3d = poses3d[:, dtu3d]
+
+  assert dec_out2.shape[0] == batch_size
+  assert poses3d.shape[0] == batch_size
+
+  if opt.procrustes:
+    # Apply per-frame procrustes alignment if asked to do so
+    for j in range(batch_size):
+      gt  = np.reshape(dec_out2[j,:],[-1,3])
+      out = np.reshape(poses3d[j,:],[-1,3])
+      _, Z, T, b, c = procrustes.compute_similarity_transform(gt,out,compute_optimal_scale=True)
+      out = (b*out.dot(T))+c
+
+      poses3d[j,:] = np.reshape(out,[-1,17*3] ) if not(opt.predict_14) else np.reshape(out,[-1,14*3] )
+
+  # Compute Euclidean distance error per joint
+  sqerr = (poses3d - dec_out2)**2 # Squared error between prediction and expected output
+  dists = np.zeros( (sqerr.shape[0], n_joints) ) # Array with L2 error per joint in mm
+  dist_idx = 0
+  for k in np.arange(0, n_joints*3, 3):
+    # Sum across X,Y, and Z dimenstions to obtain L2 distance
+    dists[:,dist_idx] = np.sqrt( np.sum( sqerr[:, k:k+3], axis=1 ))
+    dist_idx = dist_idx + 1
+
+  all_dists.append(dists)
+  assert sqerr.shape[0] == batch_size
+
+  all_dists = np.vstack( all_dists )
+
+  # Error per joint and total for all passed batches
+  # joint_err = np.mean( all_dists, axis=0 ) #mean joint errors along batches
+  total_err = np.mean( all_dists )
+  return total_err
 
 
 def test_best_model(config, checkpoint_path):
-    best_trained_model = LinearModel(config.batch_size,opt.predict_14, config.p_dropout, linear_size=opt.linear_size, num_stage=opt.num_stage)
+
+    best_trained_model = LinearModel(opt.batch_size_test,opt.predict_14, config.p_dropout, linear_size=opt.linear_size, num_stage=opt.num_stage)
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     best_trained_model.to(device)
    
@@ -287,26 +340,176 @@ def test_best_model(config, checkpoint_path):
             # Get 2d and 3d testing data for this action
             action_test_set_2d = get_action_subset( test_set_2d, action )
             action_test_set_3d = get_action_subset( test_set_3d, action )
-            encoder_inputs, decoder_outputs = get_all_batches(opt, action_test_set_2d, action_test_set_3d , config.batch_size, training=False)
+            encoder_inputs, decoder_outputs = get_all_batches(opt, action_test_set_2d, action_test_set_3d , opt.batch_size_test, training=False)
 
             total_err, joint_err, step_time = evaluate_batches_test( opt, best_trained_model,
               data_mean_3d, data_std_3d, dim_to_use_3d, dim_to_ignore_3d,
               data_mean_2d, data_std_2d, dim_to_use_2d, dim_to_ignore_2d,
-              encoder_inputs, decoder_outputs, config.batch_size )
+              encoder_inputs, decoder_outputs, opt.batch_size_test )
             cum_err = cum_err + total_err
 
             print("{0:>6.2f}".format(total_err))
 
 
     avg_error = cum_err/float(len(actions) )
-    print("Best trial test set error: {}".format(avg_error))
+    print("mean {0:>6.2f}".format(avg_error))
+    
+    return avg_error
+
+    
+
+def train(config):
+    wandb.init(config = config)
+    # config = wandb.config
+
+    train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d = read_load_data(opt)
+    
+    # CREATE MODEL
+    print(">>> creating model")
+    model = LinearModel(config.batch_size_train,opt.predict_14, config.p_dropout, linear_size=opt.linear_size, num_stage=opt.num_stage)
+    model = model.cuda()
+    model.apply(weight_init)
+
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda:0"
+        if torch.cuda.device_count() > 1:
+            model = nn.DataParallel(model)
+    model.to(device)
+
+    glob_step = 0
+    lr_init = config.lr
+    lr_now =lr_init
+    # lr_decay = opt.lr_decay
+    # before batch_size = 64 and lr_decay = 100'000
+    lr_decay = np.round(6400000/config.batch_size_train)    
+    lr_gamma = opt.lr_gamma
+    # step_size = opt.step_size
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr_init)
+
+
+    cudnn.benchmark = True  #optimize when using fixed input
+    current_epoch = 0
+
+    #LOOP THROUGH THE EPOCHS
+    while current_epoch < config.epochs:
+        model.train()
+        loss_train = 0
+        current_steps = 0
+        err_train = 0
+
+        # Optional
+        wandb.watch(model)
+
+        encoder_inputs, decoder_outputs = get_all_batches(opt, train_set_2d, train_set_3d, config.batch_size_train, training=True )      
+        nbatches = len( encoder_inputs )
+        print("There are {0} train batches".format( nbatches ))
+        #LOOP THROUGH THE EPOCHS
+        for i in range( nbatches ): 
+
+        
+            enc_in = torch.from_numpy(encoder_inputs[i]).float()
+            dec_out = torch.from_numpy(decoder_outputs[i]).float()            
+            inputs = Variable(enc_in.cuda())
+            targets = Variable(dec_out.cuda())
+            # zero the parameter gradients
+            optimizer.zero_grad()
+            # forward + backward + optimize
+            outputs = model(inputs)                                                    
+            step_loss_train = criterion(outputs, targets)
+            step_loss_train.backward()
+            optimizer.step()
+
+            # adjust the learning rate (exponential decay)
+            # lr_now = optimizer.param_groups[0]["lr"] 
+            # scheduler.step()
+
+            if glob_step % lr_decay == 0 or glob_step == 1:
+              lr_now = utils.lr_decay(optimizer, glob_step, lr_init, lr_decay, lr_gamma)
+            
+
+            step_err_train = evaluate_batches(opt,
+            data_mean_3d, data_std_3d, dim_to_use_3d, dim_to_ignore_3d,
+            dec_out, outputs, config.batch_size_train)
+
+            err_train += step_err_train
+            loss_train += float(step_loss_train)
+
+            # ENDS CURRENT BATCH
+            current_steps += 1
+            glob_step += 1
+
+        loss_train = loss_train / current_steps
+        err_train = err_train/ current_steps
+        print("training epoch: [%d] train loss: %.3f train error: %.3f " % (current_epoch+1,loss_train , err_train ))
+        
+        wandb.log({ "loss_train": loss_train, "err_train": err_train}, step = current_epoch)
+        wandb.log({ "current_lr": lr_now},  step = current_epoch)
+
+        
+
+
+        # clear useless chache
+        torch.cuda.empty_cache()
+    
+
+       
+        #ENDS CURRENT EPOCH
+        current_epoch = current_epoch + 1
+        # clear useless chache
+        torch.cuda.empty_cache()
+        
+    print("Finished Training")
+
+    str_model_params = "p_dropout=" + str(config.p_dropout) + "_" + "lr_init=" + str(config.lr)  + "_" + "batch_size="+ str(config.batch_size_train) + "_" + "n_epochs="+ str(config.epochs)+"_"
+    str_model = str_model_params +  'ckpt.pth.tar'
+    file_path = os.path.join(opt.ckpt, str_model)
+    torch.save({'epoch': current_epoch,
+                'lr_now': lr_now,
+                'step': glob_step,
+                'state_dict': model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'batch_size': config.batch_size_train,
+                'lr': config.lr,
+                'tot_epochs': config.epochs,
+                'err_train':err_train,
+                'p_dropout': config.p_dropout}, file_path)
+                    
+     
+    #TESTING (reload data, load saved checkpoint and test)
+    test_error = test_best_model(config, file_path)
+    wandb.log({"err_test":test_error}, step = current_epoch)
+    print("finished testing")
+
 
 if __name__ == "__main__":  
-    config={}
-    config["batch_size"] = 64
-    config["epochs"] = 100
-    config["lr"] = 1e-3
-    config["p_dropout"] = 0
-    config = SimpleNamespace(**config)
-    checkpoint_path ="checkpoint\\train\p_dropout=0.0_lr_init=0.001_batch_size=64_n_epochs=100_ckpt.pth.tar"
-    test_best_model(config, checkpoint_path)
+  config={}
+  print("START")
+  print(sys.argv)
+  config["batch_size_train"] = int(sys.argv[1].split("=")[1])
+  config["epochs"] = int(sys.argv[2].split("=")[1])
+  config["lr"] = float(sys.argv[3].split("=")[1])
+  config["p_dropout"] = float(sys.argv[4].split("=")[1])
+  config = SimpleNamespace(**config)
+  print(config)
+
+  train(config)
+
+  # usage python train.py batch_size=46720 epochs=0 lr=0.001 p_dropout=0.5
+
+# to debug locally
+# config={}
+# config["batch_size_train"] = 46720
+# config["epochs"] = 1
+# config["lr"] = 0.001
+# config["p_dropout"] = 0.5
+# config = SimpleNamespace(**config)
+# print(config)
+
+# train(config)
+
+
+
+# 47040 SI SPACCA CON 48320
+# 46720
