@@ -16,7 +16,7 @@ from torch.autograd import Variable
 from torch.utils.data import random_split
 
 from src.model import LinearModel,weight_init
-import src.data_utils as data_utils
+import src.data_utils_old as data_utils
 import src.cameras as cameras
 import src.utils as utils
 import src.procrustes as procrustes
@@ -41,11 +41,11 @@ opt = {
     "n_inputs": 16,
     "num_stage": 2,
     "predict_14": False,
-    "procrustes": False,
+    "procrustes": True,
     "use_hg": False,
      "TRAIN_SUBJECTS" : [1,5,6,7,8],
     "TEST_SUBJECTS" :[9,11],
-    "batch_size_test": 18944,
+    "batch_size_test": 64,
     "actions": [
            "Directions",
            "Discussion",
@@ -72,6 +72,13 @@ actions = data_utils.define_actions(opt.action, opt.actions)
 num_actions = len(actions)
 criterion = nn.MSELoss(reduction='mean').cuda() #criterion for loss function
 
+CAMERA_NAME_TO_ID = {
+  "54138969": 1,
+  "55011271": 2,
+  "58860488": 3,
+  "60457274": 4,
+}
+
 def read_load_data(opt):
     print(">>> loading data") 
     # Load camera parameters
@@ -84,7 +91,7 @@ def read_load_data(opt):
         rcams_norm = cameras.normalize_camera_params(h,w,rcams)
 
      # Load 3d data and load (or create) 2d projections
-    train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_root_positions, test_root_positions,  bone_lengths_train, bone_lengths_test = data_utils.read_3d_data(actions, opt.data_dir, opt.camera_frame, rcams, opt.TRAIN_SUBJECTS, opt.TEST_SUBJECTS, opt.predict_14, flag_bone_lengths = config.bone_lengths )  
+    train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_root_positions, test_root_positions,  bone_lengths_train, bone_lengths_test = data_utils.read_3d_data_L(actions, opt.data_dir, opt.camera_frame, rcams, opt.TRAIN_SUBJECTS, opt.TEST_SUBJECTS, opt.predict_14, flag_bone_lengths = config.bone_lengths )  
     # Read stacked hourglass 2D predictions if use_sh, otherwise use groundtruth 2D projections
     if opt.use_hg:
         train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d = data_utils.read_2d_predictions(actions, opt.data_dir, opt.TRAIN_SUBJECTS, opt.TEST_SUBJECTS)
@@ -95,15 +102,15 @@ def read_load_data(opt):
 
 
 
-def get_all_batches(opt,data_x, data_y, batch_size, training=True ):
+def get_all_batches(opt,data_x, data_y, batch_size, input_size, bone_lengths = None, shuffle=True, seed = 42 ,rcams_norm = None ):
     """
     Obtain a list of all the batches, randomly permutted
     Args
       data_x: dictionary with 2d inputs
       data_y: dictionary with 3d expected outputs
       camera_frame: whether the 3d data is in camera coordinates
-      training: True if this is a training batch. False otherwise.
-
+      shuffle: True to shuffle data. False otherwise.
+      seed: a fixed seed make the suffling always the same. 
     Returns
       encoder_inputs: list of 2d batches
       decoder_outputs: list of 3d batches
@@ -117,7 +124,7 @@ def get_all_batches(opt,data_x, data_y, batch_size, training=True ):
       n = n + n2d
 
     # 2d pos 具有 16个关节点
-    encoder_inputs  = np.zeros((n, opt.n_inputs*2), dtype=float)
+    encoder_inputs  = np.zeros((n, input_size), dtype=float)
     # 3d pose 
     
     if opt.predict_14:
@@ -134,13 +141,50 @@ def get_all_batches(opt,data_x, data_y, batch_size, training=True ):
       key3d = (subj, b, fname[:-3]) if fname.endswith('-sh') and opt.camera_frame else key3d
 
       n2d, _ = data_x[ key2d ].shape
-      encoder_inputs[idx:idx+n2d, :]  = data_x[ key2d ]
+      encoder_inputs[idx:idx+n2d, 0:32]  = data_x[ key2d ]
       decoder_outputs[idx:idx+n2d, :] = data_y[ key3d ]
+
+      if (config.camera_params and not config.bone_lengths): #ADD ONLY CAMERA PARAMS
+        #find the correct camera params
+        camera_name = fname.split('..')[-1].split('.')[0]
+        camera_id =  CAMERA_NAME_TO_ID[camera_name]
+        norm_cam_params = rcams_norm[(subj,camera_id)]
+        p1 = np.tile(norm_cam_params[0][0],(n2d, 1))
+        p2 = np.tile(norm_cam_params[0][1],(n2d, 1))
+        p3 = np.tile(norm_cam_params[1],(n2d, 1))
+        encoder_inputs[idx:idx+n2d, 32:33] = p1
+        encoder_inputs[idx:idx+n2d, 33:34] = p2
+        encoder_inputs[idx:idx+n2d, 34:35] = p3
+
+      if (not config.camera_params and config.bone_lengths): #ADD ONLY BONE LENGTHS
+        camera_name = fname.split('..')[-1].split('.')[0]
+        camera_id =  CAMERA_NAME_TO_ID[camera_name]
+        lengths = bone_lengths[(subj,camera_id)]
+        p1 = np.tile(lengths,(n2d, 1))
+        encoder_inputs[idx:idx+n2d, 32:47] = p1
+
+      if (config.camera_params and config.bone_lengths): #ADD CAMERA PARAMS AND BONE LENGTHS
+        camera_name = fname.split('..')[-1].split('.')[0]
+        camera_id =  CAMERA_NAME_TO_ID[camera_name]
+        
+        norm_cam_params = rcams_norm[(subj,camera_id)]
+        p1 = np.tile(norm_cam_params[0][0],(n2d, 1))
+        p2 = np.tile(norm_cam_params[0][1],(n2d, 1))
+        p3 = np.tile(norm_cam_params[1],(n2d, 1))
+        encoder_inputs[idx:idx+n2d, 32:33] = p1
+        encoder_inputs[idx:idx+n2d, 33:34] = p2
+        encoder_inputs[idx:idx+n2d, 34:35] = p3
+
+        lengths = bone_lengths[(subj,camera_id)]
+        p4 = np.tile(lengths,(n2d, 1))
+        encoder_inputs[idx:idx+n2d, 35:50] = p4
+
       idx = idx + n2d
 
 
-    if training:
-      # Randomly permute everything
+    if shuffle:
+      #  permute everything
+      np.random.seed(seed)
       idx = np.random.permutation( n )
       encoder_inputs  = encoder_inputs[idx, :]
       decoder_outputs = decoder_outputs[idx, :]
@@ -156,7 +200,6 @@ def get_all_batches(opt,data_x, data_y, batch_size, training=True ):
     decoder_outputs = np.split( decoder_outputs, n_batches )
 
     return encoder_inputs, decoder_outputs
-
 
 def evaluate_batches_test(opt,model,
   data_mean_3d, data_std_3d, dim_to_use_3d, dim_to_ignore_3d,
@@ -211,9 +254,12 @@ def evaluate_batches_test(opt,model,
     step_loss_test = criterion(outputs, targets)
     
     # denormalize
-    enc_in  = data_utils.unNormalizeData( enc_in,  data_mean_2d, data_std_2d, dim_to_ignore_2d )
-    dec_out = data_utils.unNormalizeData( dec_out, data_mean_3d, data_std_3d, dim_to_ignore_3d )
-    poses3d = data_utils.unNormalizeData( outputs.data.cpu().numpy(), data_mean_3d, data_std_3d, dim_to_ignore_3d )
+    # enc_in  = data_utils.unNormalizeData( enc_in,  data_mean_2d, data_std_2d, dim_to_ignore_2d )
+    # dec_out = data_utils.unNormalizeData( dec_out, data_mean_3d, data_std_3d, dim_to_ignore_3d )
+    # poses3d = data_utils.unNormalizeData( outputs.data.cpu().numpy(), data_mean_3d, data_std_3d, dim_to_ignore_3d )
+    dec_out = data_utils.deselect_joints(dec_out, data_mean_3d, dim_to_ignore_3d)
+    poses3d = data_utils.deselect_joints(outputs.data.cpu().numpy(), data_mean_3d, dim_to_ignore_3d)
+
 
     # Keep only the relevant dimensions
     dtu3d = np.hstack( (np.arange(3), dim_to_use_3d) ) if not(opt.predict_14) else  dim_to_use_3d
@@ -281,8 +327,11 @@ def evaluate_batches(opt,
   all_dists = []
     
   # denormalize
-  dec_out2 = data_utils.unNormalizeData( dec_out, data_mean_3d, data_std_3d, dim_to_ignore_3d )
-  poses3d = data_utils.unNormalizeData( outputs.data.cpu().numpy(), data_mean_3d, data_std_3d, dim_to_ignore_3d )
+#   dec_out2 = data_utils.unNormalizeData( dec_out, data_mean_3d, data_std_3d, dim_to_ignore_3d )
+#   poses3d = data_utils.unNormalizeData( outputs.data.cpu().numpy(), data_mean_3d, data_std_3d, dim_to_ignore_3d )
+  dec_out2 = data_utils.deselect_joints(dec_out, data_mean_3d, dim_to_ignore_3d)
+  poses3d = data_utils.deselect_joints(outputs.data.cpu().numpy(), data_mean_3d, dim_to_ignore_3d)
+
 
   # Keep only the relevant dimensions
   dtu3d = np.hstack( (np.arange(3), dim_to_use_3d) ) if not(opt.predict_14) else  dim_to_use_3d
@@ -324,7 +373,7 @@ def evaluate_batches(opt,
 
 
 def  test_best_model( model,test_set_2d, test_set_3d, data_mean_3d, data_std_3d, dim_to_use_3d, dim_to_ignore_3d,
-              data_mean_2d, data_std_2d, dim_to_use_2d, dim_to_ignore_2d):
+              data_mean_2d, data_std_2d, dim_to_use_2d, dim_to_ignore_2d, bone_lengths_test, rcams_norm):
     input_size = 32 #baseline modeline takes in input 16x2 2d joint coordinates
     if config.camera_params == True:
       input_size += 3 #camamera centers cx, cy + focus
@@ -352,7 +401,8 @@ def  test_best_model( model,test_set_2d, test_set_3d, data_mean_3d, data_std_3d,
             # Get 2d and 3d testing data for this action
             action_test_set_2d = get_action_subset( test_set_2d, action )
             action_test_set_3d = get_action_subset( test_set_3d, action )
-            encoder_inputs, decoder_outputs = get_all_batches(opt, action_test_set_2d, action_test_set_3d ,opt.batch_size_test, training = False)
+            # encoder_inputs, decoder_outputs = get_all_batches(opt, action_test_set_2d, action_test_set_3d ,opt.batch_size_test, training = False)
+            encoder_inputs, decoder_outputs = get_all_batches(opt, action_test_set_2d, action_test_set_3d ,opt.batch_size_test, input_size, bone_lengths = bone_lengths_test, shuffle=False, rcams_norm = rcams_norm)
 
             total_err, joint_err, step_time, loss = evaluate_batches_test( opt, model,
               data_mean_3d, data_std_3d, dim_to_use_3d, dim_to_ignore_3d,
@@ -426,7 +476,9 @@ def train(config):
         # Optional
         wandb.watch(model)
 
-        encoder_inputs, decoder_outputs = get_all_batches(opt, train_set_2d, train_set_3d, config.batch_size_train, training=True )      
+        # encoder_inputs, decoder_outputs = get_all_batches(opt, train_set_2d, train_set_3d, config.batch_size_train, training=True )      
+        encoder_inputs, decoder_outputs = get_all_batches(opt, train_set_2d, train_set_3d, config.batch_size_train, input_size, bone_lengths = bone_lengths_train, shuffle=True, seed = 42, rcams_norm = rcams_norm )      #training = true just shuffle
+
         nbatches = len( encoder_inputs )
         print("There are {0} train batches".format( nbatches ))
         #LOOP THROUGH THE EPOCHS
@@ -478,7 +530,7 @@ def train(config):
 
         #TESTING (reload data, load saved checkpoint and test)
         test_error, loss_test = test_best_model( model,test_set_2d, test_set_3d, data_mean_3d, data_std_3d, dim_to_use_3d, dim_to_ignore_3d,
-              data_mean_2d, data_std_2d, dim_to_use_2d, dim_to_ignore_2d)
+              data_mean_2d, data_std_2d, dim_to_use_2d, dim_to_ignore_2d,bone_lengths_test, rcams_norm)
 
         wandb.log({"err_test":test_error}, step = current_epoch)
         wandb.log({"loss_test":loss_test}, step = current_epoch)
@@ -512,7 +564,7 @@ def train(config):
 if __name__ == "__main__": 
   
   config={}
-
+  '''
   print("START")
   print(sys.argv)
   config["batch_size_train"] = int(sys.argv[1].split("=")[1])
@@ -528,22 +580,52 @@ if __name__ == "__main__":
 
   train(config)
  
-# usage python reproduce_baseline.py batch_size=46720 epochs=5 lr=0.001 p_dropout=0.5 
-
-# to debug locally
+# usage 
+# python reproduce_baseline.py batch_size_train=46720 camera_params=0 bone_lengths=0 directional_loss=0 epochs=5 lr=0.001 p_dropout=0.5 
 '''
+# to debug locally
+
 config={}
-config["batch_size_train"] = 64
-config["epochs"] = 5
+config["batch_size_train"] =64
+config["epochs"] = 400
 config["lr"] = 0.001
 config["p_dropout"] = 0.5
-config["camera_params"] = False
-config["bone_lengths"] =False
-config["directional_loss"] = False
+config["camera_params"] = 0
+config["bone_lengths"] =1
+config["directional_loss"] = 0
 config = SimpleNamespace(**config)
 print(config)
 
 train(config)
+'''
+WANDB-----------------------------
+method: grid
+metric:
+  goal: minimize
+  name: err_test
+parameters:
+  batch_size_train:
+    values:
+      - 64
+  bone_lengths:
+    values:
+      - 0
+  camera_params:
+    values:
+      - 0
+  directional_loss:
+    values:
+      - 0
+  epochs:
+    values:
+      - 200
+  lr:
+    values:
+      - 0.001
+  p_dropout:
+    values:
+      - 0.5
+program: reproduce_protocolTwo_test64_train64.py
 '''
 
 

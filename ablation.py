@@ -181,7 +181,7 @@ def get_all_batches(opt,data_x, data_y, batch_size, input_size, bone_lengths = N
 
         lengths = bone_lengths[(subj,camera_id)]
         p4 = np.tile(lengths,(n2d, 1))
-        encoder_inputs[idx:idx+n2d, 32:47] = p4
+        encoder_inputs[idx:idx+n2d, 35:50] = p4
 
       idx = idx + n2d
 
@@ -632,33 +632,53 @@ def tuning(fold,train_idx, val_idx, encoder_inputs, decoder_outputs, data_mean_3
 
 
 if __name__ == "__main__":  
-  
-  # config={}
-  # print("START")
-  # print(sys.argv)
-  # config["batch_size_train"] = int(sys.argv[1].split("=")[1])
-  # config["current_fold"] = int(sys.argv[2].split("=")[1])
-  # config["epochs"] = int(sys.argv[3].split("=")[1])
-  # config["k_fold"] = int(sys.argv[4].split("=")[1])
-  # config["lr"] = float(sys.argv[5].split("=")[1])
-  # config["p_dropout"] = float(sys.argv[6].split("=")[1])
- 
-  
+  '''
+  config={}
+  print("START")
+  print(sys.argv)
+  config["batch_size_train"] = int(sys.argv[1].split("=")[1])
+  config["bone_lengths"] = bool(int(sys.argv[2].split("=")[1]))
+  config["camera_params"] =bool(int(sys.argv[3].split("=")[1]))
+  config["current_fold"] = int(sys.argv[4].split("=")[1]) 
+  config["directional_loss"] = bool(int(sys.argv[5].split("=")[1]))
+  config["epochs"] = int(sys.argv[6].split("=")[1])
+  config["k_fold"] = int(sys.argv[7].split("=")[1])
+  config["lr"] = float(sys.argv[8].split("=")[1])
+  config["p_dropout"] = float(sys.argv[9].split("=")[1])
 
+  config = SimpleNamespace(**config)
+  '''
   config={}
   config["batch_size_train"] = 46720
-  config["epochs"] = 10
+  config["epochs"] = 200
   config["lr"] = 0.001
   config["p_dropout"] = 0.1
   config["k_fold"] = 5 
   config["current_fold"] = 3
-  config["camera_params"] = True
-  config["bone_lengths"] = True
-  config["directional_loss"] = True
+  config["camera_params"] = False
+  config["bone_lengths"] = False
+  config["directional_loss"] = False
   print(config)
   config = SimpleNamespace(**config)
-
+  
   tuning_kfold(config)
+
+
+  '''
+  config={}
+  config["batch_size_train"] = 64
+  config["epochs"] = 3
+  config["lr"] = 0.001
+  config["p_dropout"] = 0.1
+  config["k_fold"] = 5 
+  config["current_fold"] = 3
+  config["camera_params"] = False
+  config["bone_lengths"] = True
+  config["directional_loss"] = False
+  print(config)
+  config = SimpleNamespace(**config)
+  '''
+
 
   #usage python train_kfold.py batch_size=18944 epochs=100 lr=0.001 p_dropout=0.0
 

@@ -113,16 +113,16 @@ def calculate_mean_bone_lengths(bone_lengths, subjects, action):
     
   return bone_lengths_final
 
-def standardize_bone_lengths(mu, stddev, bone_lengths_train, bone_lengths_test):
+def standardize_bone_lengths(bone_lengths_train, bone_lengths_test):
   
-  # #calculate mean and standard dev
-  # bone_lengths_tmp = list(bone_lengths_train.values())
-  # bone_lengths_tmp.extend(list(bone_lengths_test.values()))
-  # bone_lengths_tmp = np.array(bone_lengths_tmp)
-  # mu = np.mean(bone_lengths_tmp, axis = 0)
-  # #mu = np.tile(mu, (bone_lengths_tmp.shape[0], 1))
-  # stddev = np.std(bone_lengths_tmp, axis = 0)
-  # #stddev = np.tile(stddev, (bone_lengths_tmp.shape[0], 1))
+  #calculate mean and standard dev
+  bone_lengths_tmp = list(bone_lengths_train.values())
+  bone_lengths_tmp.extend(list(bone_lengths_test.values()))
+  bone_lengths_tmp = np.array(bone_lengths_tmp)
+  mu = np.mean(bone_lengths_tmp, axis = 0)
+  #mu = np.tile(mu, (bone_lengths_tmp.shape[0], 1))
+  stddev = np.std(bone_lengths_tmp, axis = 0)
+  #stddev = np.tile(stddev, (bone_lengths_tmp.shape[0], 1))
 
   #standardize
   bone_lengths_train_norm = {}
@@ -134,33 +134,6 @@ def standardize_bone_lengths(mu, stddev, bone_lengths_train, bone_lengths_test):
     bone_lengths_test_norm[ key ] = np.divide( (bone_lengths_test[key] - mu), stddev )
 
   return bone_lengths_train_norm, bone_lengths_test_norm
-
-def bone_normalization_stats(bone_lengths_train):
-  # #calculate mean and standard dev
-  bone_lengths_tmp = list(bone_lengths_train.values())
-  bone_lengths_tmp = np.array(bone_lengths_tmp)
-  mu = np.mean(bone_lengths_tmp, axis = 0)
-  stddev = np.std(bone_lengths_tmp, axis = 0)
-  return mu, stddev
-
-
-def standardize_bone_lengths_old(bone_lengths):
-  
-  #calculate mean and standard dev
-  #calculate mean and standard dev
-  bone_lengths_tmp = list(bone_lengths.values())
-  bone_lengths_tmp = np.array(bone_lengths_tmp)
-  mu = np.mean(bone_lengths_tmp, axis = 0)
-  #mu = np.tile(mu, (bone_lengths_tmp.shape[0], 1))
-  stddev = np.std(bone_lengths_tmp, axis = 0)
-  #stddev = np.tile(stddev, (bone_lengths_tmp.shape[0], 1))
-
-  #standardize
-  bone_lengths_norm = {}
-  for key in bone_lengths.keys():  
-    bone_lengths_norm[ key ] = np.divide( (bone_lengths[key] - mu), stddev )
-  return bone_lengths_norm
-
 
 def standardize_bone_lengths2(bone_lengths):
   
@@ -695,8 +668,9 @@ def read_3d_data( actions, data_dir, camera_frame, rcams,TRAIN_SUBJECTS, TEST_SU
     bone_lengths_train = calculate_length_notNormalized( train_set, TRAIN_SUBJECTS, action = 'Directions' )
     bone_lengths_test = calculate_length_notNormalized( test_set, TEST_SUBJECTS, action = 'Directions' )
     # bone_lengths_train_norm, bone_lengths_test_norm  = standardize_bone_lengths(bone_lengths_train, bone_lengths_test)
-    bone_mean, bone_std = bone_normalization_stats(bone_lengths_train)
-    bone_lengths_train_norm, bone_lengths_test_norm = standardize_bone_lengths(bone_mean, bone_std, bone_lengths_train, bone_lengths_test)
+    bone_lengths_test_norm = standardize_bone_lengths2(bone_lengths_test) 
+    bone_lengths_train_norm = standardize_bone_lengths2(bone_lengths_train)
+
 
   # Compute normalization statistics
   complete_train = copy.deepcopy( np.vstack(list(train_set.values() )))
@@ -716,7 +690,7 @@ def read_3d_data( actions, data_dir, camera_frame, rcams,TRAIN_SUBJECTS, TEST_SU
   return train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use, train_root_positions, test_root_positions, bone_lengths_train_norm, bone_lengths_test_norm
 
 
-def read_3d_data_L( actions, data_dir, camera_frame, rcams,TRAIN_SUBJECTS, TEST_SUBJECTS, predict_14=False, flag_bone_lengths = False ):
+def read_3d_data_L( actions, data_dir, camera_frame, rcams, predict_14=False ):
   """
   Loads 3d poses, zero-centres and normalizes them
 
@@ -765,18 +739,9 @@ def read_3d_data_L( actions, data_dir, camera_frame, rcams,TRAIN_SUBJECTS, TEST_
   p3d = train_set[(1, 'Directions', 'Directions 1..54138969.h5')][0,:]
   ax3 = plt.axes(projection='3d');viz.show3Dpose( p3d, ax3)
   '''
-#CALCULATE LENGTH 
-  bone_lengths_train_norm = None
-  bone_lengths_test_norm = None
-
-  if flag_bone_lengths:
-    #calculate lengths for action directions
-    bone_lengths_train = calculate_length_notNormalized( train_set, TRAIN_SUBJECTS, action = 'Directions' )
-    bone_lengths_test = calculate_length_notNormalized( test_set, TEST_SUBJECTS, action = 'Directions' )
-    # bone_lengths_train_norm, bone_lengths_test_norm  = standardize_bone_lengths(bone_lengths_train, bone_lengths_test)
-    # LC, LC2 main_LC but choose between standardize_bone_length and standardize_bone_length2 
-    bone_lengths_train_norm = standardize_bone_lengths_old(bone_lengths_train)
-    bone_lengths_test_norm = standardize_bone_lengths_old(bone_lengths_test)
+  #CALCULATE LENGTH 
+  bone_lengths_train = calculate_length_notNormalized( train_set, TRAIN_SUBJECTS, action = 'Directions' )
+  bone_lengths_test = calculate_length_notNormalized( test_set, TEST_SUBJECTS, action = 'Directions' )
   # Compute normalization statistics
   complete_train = copy.deepcopy( np.vstack( list(train_set.values()) ))
   data_mean, data_std, dim_to_ignore, dim_to_use = normalization_stats( complete_train, dim=3, predict_14=predict_14 )
@@ -792,7 +757,9 @@ def read_3d_data_L( actions, data_dir, camera_frame, rcams,TRAIN_SUBJECTS, TEST_
   ax = plt.axes(projection='3d')
   viz.show3D_norm_pose( pose3d, ax)
   '''
- 
+  #LC, LC2 main_LC but choose between standardize_bone_length and standardize_bone_length2 
+  bone_lengths_train_norm = standardize_bone_lengths2(bone_lengths_train)
+  bone_lengths_test_norm = standardize_bone_lengths2(bone_lengths_test)
   
 
   return train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use, train_root_positions, test_root_positions, bone_lengths_train_norm, bone_lengths_test_norm
