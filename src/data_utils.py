@@ -585,9 +585,9 @@ def create_2d_data( actions, data_dir, rcams, TRAIN_SUBJECTS, TEST_SUBJECTS ):
 
   return train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use
 
-
+"""
 def create_2d_data_L( actions, data_dir, rcams ):
-  """
+  
   Creates 2d poses by projecting 3d poses with the corresponding camera
   parameters. Also normalizes the 2d poses
 
@@ -602,7 +602,7 @@ def create_2d_data_L( actions, data_dir, rcams ):
     data_std: vector with the standard deviation of the 2d training data
     dim_to_ignore: list with the dimensions to not predict
     dim_to_use: list with the dimensions to predict
-  """
+  
 
   # Load 3d data
   train_set = load_data( data_dir, TRAIN_SUBJECTS, actions, dim=3 )
@@ -628,8 +628,9 @@ def create_2d_data_L( actions, data_dir, rcams ):
   '''
 
   return train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use
-
-def add_noise(train_set, sigma):
+"""
+def add_noise(train_set, sigma): 
+  # to add noise to 2d inputs, used in create_2d_data_L
   for k in train_set.keys():
     frames = train_set[k]
     f_shape = frames.shape
@@ -637,7 +638,7 @@ def add_noise(train_set, sigma):
     train_set[k] = train_set[k] + noise
   return train_set
 
-def read_3d_data( actions, data_dir, camera_frame, rcams,TRAIN_SUBJECTS, TEST_SUBJECTS, predict_14=False, flag_bone_lengths = False ):
+def read_3d_data( actions, data_dir, camera_frame, rcams,TRAIN_SUBJECTS, TEST_SUBJECTS, predict_14=False, flag_bone_lengths = False, normalize_target = True ):
   """
   Loads 3d poses, zero-centres and normalizes them
 
@@ -702,175 +703,20 @@ def read_3d_data( actions, data_dir, camera_frame, rcams,TRAIN_SUBJECTS, TEST_SU
   complete_train = copy.deepcopy( np.vstack(list(train_set.values() )))
   data_mean, data_std, dim_to_ignore, dim_to_use = normalization_stats( complete_train, dim=3, predict_14=predict_14 )
   
-
-  # Divide every dimension independently
-  train_set = normalize_data( train_set, data_mean, data_std, dim_to_use )
-  test_set  = normalize_data( test_set,  data_mean, data_std, dim_to_use )
-
+  if normalize_target:
+    # Divide every dimension independently. (as original paper)
+    train_set = normalize_data( train_set, data_mean, data_std, dim_to_use )
+    test_set  = normalize_data( test_set,  data_mean, data_std, dim_to_use )
+  else:
+    #if the target is not normalize, i need to select the correct number of joints
+    train_set = select_joints( train_set,  dim_to_use )
+    test_set  = select_joints( test_set,   dim_to_use )
   '''
   import src.viz_new as viz
   pose3d = train_set[(1, 'Directions', 'Directions 1..55011271.h5')][0]
   ax = plt.axes(projection='3d')
   viz.show3D_norm_pose( pose3d, ax)
   '''
-  return train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use, train_root_positions, test_root_positions, bone_lengths_train_norm, bone_lengths_test_norm
-
-
-def read_3d_data_L( actions, data_dir, camera_frame, rcams,TRAIN_SUBJECTS, TEST_SUBJECTS, predict_14=False, flag_bone_lengths = False ):
-  """
-  Loads 3d poses, zero-centres and normalizes them
-
-  Args
-    actions: list of strings. Actions to load
-    data_dir: string. Directory where the data can be loaded from
-    camera_frame: boolean. Whether to convert the data to camera coordinates
-    rcams: dictionary with camera parameters
-    predict_14: boolean. Whether to predict only 14 joints
-  Returns
-    train_set: dictionary with loaded 3d poses for training
-    test_set: dictionary with loaded 3d poses for testing
-    data_mean: vector with the mean of the 3d training data
-    data_std: vector with the standard deviation of the 3d training data
-    dim_to_ignore: list with the dimensions to not predict
-    dim_to_use: list with the dimensions to predict
-    train_root_positions: dictionary with the 3d positions of the root in train
-    test_root_positions: dictionary with the 3d positions of the root in test
-  """
-  # Load 3d data
-  train_set = load_data( data_dir, TRAIN_SUBJECTS, actions, dim=3 )
-  test_set  = load_data( data_dir, TEST_SUBJECTS,  actions, dim=3 )
-  '''
-  import src.viz_new as viz
-  p3d = train_set[(1, 'Directions', 'Directions 1.cdf')][0,:]
-  ax1 = plt.axes(projection='3d');viz.show3Dpose( p3d, ax1)
-  '''
-
-  if camera_frame:
-    train_set = transform_world_to_camera( train_set, rcams )
-    test_set  = transform_world_to_camera( test_set, rcams )
-
-  '''
-  import src.viz_new as viz
-  p3d = train_set[(1, 'Directions', 'Directions 1..54138969.h5')][0,:]
-  ax2 = plt.axes(projection='3d');viz.show3Dpose( p3d, ax2)
-
-  other cameras ex. 1, 'Directions', 'Directions 1..55011271.h5'
-  '''
-    
-  # Apply 3d post-processing (centering around root)
-  train_set, train_root_positions = postprocess_3d( train_set )
-  test_set,  test_root_positions  = postprocess_3d( test_set )
-  '''
-  import src.viz_new as viz
-  p3d = train_set[(1, 'Directions', 'Directions 1..54138969.h5')][0,:]
-  ax3 = plt.axes(projection='3d');viz.show3Dpose( p3d, ax3)
-  '''
-#CALCULATE LENGTH 
-  bone_lengths_train_norm = None
-  bone_lengths_test_norm = None
-
-  if flag_bone_lengths:
-    #calculate lengths for action directions
-    bone_lengths_train = calculate_length_notNormalized( train_set, TRAIN_SUBJECTS, action = 'Directions' )
-    bone_lengths_test = calculate_length_notNormalized( test_set, TEST_SUBJECTS, action = 'Directions' )
-    # bone_lengths_train_norm, bone_lengths_test_norm  = standardize_bone_lengths(bone_lengths_train, bone_lengths_test)
-    # LC, LC2 main_LC but choose between standardize_bone_length and standardize_bone_length2 
-    bone_lengths_train_norm = standardize_bone_lengths_old(bone_lengths_train)
-    bone_lengths_test_norm = standardize_bone_lengths_old(bone_lengths_test)
-  # Compute normalization statistics
-  complete_train = copy.deepcopy( np.vstack( list(train_set.values()) ))
-  data_mean, data_std, dim_to_ignore, dim_to_use = normalization_stats( complete_train, dim=3, predict_14=predict_14 )
-  
-  #DATA ARE DIRECTLY IN MM
-  # Divide every dimension independently
-  train_set = select_joints( train_set,  dim_to_use )
-  test_set  = select_joints( test_set,   dim_to_use )
-
-  '''
-  import src.viz_new as viz
-  pose3d = train_set[(1, 'Directions', 'Directions 1..55011271.h5')][0]
-  ax = plt.axes(projection='3d')
-  viz.show3D_norm_pose( pose3d, ax)
-  '''
- 
-  
-
-  return train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use, train_root_positions, test_root_positions, bone_lengths_train_norm, bone_lengths_test_norm
-
-def read_3d_data_C2( actions, data_dir, camera_frame, rcams, predict_14=False ):
-  """
-  Loads 3d poses, zero-centres and normalizes them
-
-  Args
-    actions: list of strings. Actions to load
-    data_dir: string. Directory where the data can be loaded from
-    camera_frame: boolean. Whether to convert the data to camera coordinates
-    rcams: dictionary with camera parameters
-    predict_14: boolean. Whether to predict only 14 joints
-  Returns
-    train_set: dictionary with loaded 3d poses for training
-    test_set: dictionary with loaded 3d poses for testing
-    data_mean: vector with the mean of the 3d training data
-    data_std: vector with the standard deviation of the 3d training data
-    dim_to_ignore: list with the dimensions to not predict
-    dim_to_use: list with the dimensions to predict
-    train_root_positions: dictionary with the 3d positions of the root in train
-    test_root_positions: dictionary with the 3d positions of the root in test
-  """
-  # Load 3d data
-  train_set = load_data( data_dir, TRAIN_SUBJECTS, actions, dim=3 )
-  test_set  = load_data( data_dir, TEST_SUBJECTS,  actions, dim=3 )
-  '''
-  import src.viz_new as viz
-  p3d = train_set[(1, 'Directions', 'Directions 1.cdf')][0,:]
-  ax1 = plt.axes(projection='3d');viz.show3Dpose( p3d, ax1)
-  '''
-
-  if camera_frame:
-    train_set = transform_world_to_camera( train_set, rcams )
-    test_set  = transform_world_to_camera( test_set, rcams )
-
-  '''
-  import src.viz_new as viz
-  p3d = train_set[(1, 'Directions', 'Directions 1..54138969.h5')][0,:]
-  ax2 = plt.axes(projection='3d');viz.show3Dpose( p3d, ax2)
-
-  other cameras ex. 1, 'Directions', 'Directions 1..55011271.h5'
-  '''
-    
-  # Apply 3d post-processing (centering around root)
-  train_set, train_root_positions = postprocess_3d( train_set )
-  test_set,  test_root_positions  = postprocess_3d( test_set )
-  '''
-  import src.viz_new as viz
-  p3d = train_set[(1, 'Directions', 'Directions 1..54138969.h5')][0,:]
-  ax3 = plt.axes(projection='3d');viz.show3Dpose( p3d, ax3)
-  '''
-  #CALCULATE LENGTH 
-  bone_lengths_train = calculate_length_notNormalized( train_set, TRAIN_SUBJECTS, action = 'Directions' )
-  bone_lengths_test = calculate_length_notNormalized( test_set, TEST_SUBJECTS, action = 'Directions' )
-  # Compute normalization statistics
-  complete_train = copy.deepcopy( np.vstack( list(train_set.values()) ))
-  data_mean, data_std, dim_to_ignore, dim_to_use = normalization_stats( complete_train, dim=3, predict_14=predict_14 )
-  
-  #DATA ARE DIRECTLY IN MM
-  # Divide every dimension independently
-  # Divide every dimension independently
-  train_set = normalize_data( train_set, data_mean, data_std, dim_to_use )
-  test_set  = normalize_data( test_set,  data_mean, data_std, dim_to_use )
-
-
-  '''
-  import src.viz_new as viz
-  pose3d = train_set[(1, 'Directions', 'Directions 1..55011271.h5')][0]
-  ax = plt.axes(projection='3d')
-  viz.show3D_norm_pose( pose3d, ax)
-  '''
-  #LC, LC2 main_LC but choose between standardize_bone_length and standardize_bone_length2 
-  bone_lengths_train_norm = standardize_bone_lengths2(bone_lengths_train)
-  bone_lengths_test_norm = standardize_bone_lengths2(bone_lengths_test)
-  
-
   return train_set, test_set, data_mean, data_std, dim_to_ignore, dim_to_use, train_root_positions, test_root_positions, bone_lengths_train_norm, bone_lengths_test_norm
 
 

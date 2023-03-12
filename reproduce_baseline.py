@@ -23,7 +23,7 @@ import src.procrustes as procrustes
 import src.viz_new as viz
 import wandb
 
-#FIXED SETTINGS
+#FIXED SETTINGS (except procrustes!)
 opt = {
     "SimpleTest": False,
     "action": "All",
@@ -91,7 +91,7 @@ def read_load_data(opt):
         rcams_norm = cameras.normalize_camera_params(h,w,rcams)
 
      # Load 3d data and load (or create) 2d projections
-    train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_root_positions, test_root_positions,  bone_lengths_train, bone_lengths_test = data_utils.read_3d_data(actions, opt.data_dir, opt.camera_frame, rcams, opt.TRAIN_SUBJECTS, opt.TEST_SUBJECTS, opt.predict_14, flag_bone_lengths = config.bone_lengths )  
+    train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_root_positions, test_root_positions,  bone_lengths_train, bone_lengths_test = data_utils.read_3d_data(actions, opt.data_dir, opt.camera_frame, rcams, opt.TRAIN_SUBJECTS, opt.TEST_SUBJECTS, opt.predict_14, flag_bone_lengths = config.bone_lengths, normalize_target = config.normalize_target)  
     # Read stacked hourglass 2D predictions if use_sh, otherwise use groundtruth 2D projections
     if opt.use_hg:
         train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d = data_utils.read_2d_predictions(actions, opt.data_dir, opt.TRAIN_SUBJECTS, opt.TEST_SUBJECTS)
@@ -389,7 +389,7 @@ def  test_best_model( model,test_set_2d, test_set_3d, data_mean_3d, data_std_3d,
         with torch.no_grad(): 
 
             # print("{0:<12} ".format(action), end="")
-            s+="{0:<12} ".format(action)
+            s+=action
 
             # Get 2d and 3d testing data for this action
             # Get 2d and 3d testing data for this action
@@ -407,13 +407,13 @@ def  test_best_model( model,test_set_2d, test_set_3d, data_mean_3d, data_std_3d,
 
 
             # print("{0:>6.2f}".format(total_err))
-            s += ': '
+            s += ':'
             s+= "{0:>6.2f}".format(total_err)
-
+            s += ' '
     print(s)
     avg_error = cum_err/float(len(actions) )
     avg_loss = cum_loss/float(len(actions) )
-    
+    print("test loss: %.3f test error: %.3f " % (avg_loss , avg_error ))
     return avg_error, avg_loss
 
     
@@ -428,6 +428,8 @@ def train(config):
 
     if config.bone_lengths:
       input_size += 15
+
+    best_test_error = 1000
 
     train_set_3d, test_set_3d, data_mean_3d, data_std_3d, dim_to_ignore_3d, dim_to_use_3d, train_set_2d, test_set_2d, data_mean_2d, data_std_2d, dim_to_ignore_2d, dim_to_use_2d, rcams_norm, bone_lengths_train, bone_lengths_test= read_load_data(opt)
     # train_subset_3d, val_subset_3d, train_subset_2d, val_subset_2d = create_test_val_subsets(train_set_3d, train_set_2d)
@@ -525,40 +527,44 @@ def train(config):
         #TESTING (reload data, load saved checkpoint and test)
         test_error, loss_test = test_best_model( model,test_set_2d, test_set_3d, data_mean_3d, data_std_3d, dim_to_use_3d, dim_to_ignore_3d,
               data_mean_2d, data_std_2d, dim_to_use_2d, dim_to_ignore_2d,bone_lengths_test, rcams_norm)
-
+        
         wandb.log({"err_test":test_error}, step = current_epoch)
         wandb.log({"loss_test":loss_test}, step = current_epoch)
         torch.cuda.empty_cache()
         print("finished testing")
-        #ENDS CURRENT EPOCH
+
+        # save best model
+        if test_error < best_test_error: 
+          best_test_error  = test_error
+
+          str_model_params = "p_dropout=" + str(config.p_dropout) + "_" + "lr_init=" + str(config.lr)  + "_" + "batch_size="+ str(config.batch_size_train) + "_" + "n_epochs="+ str(config.epochs)+"_"
+          str_model = str_model_params +  'ckpt.pth.tar'
+          file_path = os.path.join('checkpoints_reproduce_baseline', str_model)
+          
+          torch.save({'epoch': current_epoch,
+                      'lr_now': lr_now,
+                      'step': glob_step,
+                      'state_dict': model.state_dict(),
+                      'optimizer': optimizer.state_dict(),
+                      'batch_size': config.batch_size_train,
+                      'lr_init': config.lr,
+                      'tot_epochs': config.epochs,
+                      'current_epochs': current_epoch,
+                      'procrustus': opt.procrustes,
+                      'err_train':err_train,
+                      'p_dropout': config.p_dropout}, file_path)
+                      
+            #ENDS CURRENT EPOCH
+        wandb.log({ "best_test_error": best_test_error},  step = current_epoch)
         current_epoch = current_epoch + 1
 
-        
     print("Finished Training")
-
-    str_model_params = "p_dropout=" + str(config.p_dropout) + "_" + "lr_init=" + str(config.lr)  + "_" + "batch_size="+ str(config.batch_size_train) + "_" + "n_epochs="+ str(config.epochs)+"_"
-    str_model = str_model_params +  'ckpt.pth.tar'
-    file_path = os.path.join(opt.ckpt, str_model)
-    '''
-    torch.save({'epoch': current_epoch,
-                'lr_now': lr_now,
-                'step': glob_step,
-                'state_dict': model.state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'batch_size': config.batch_size_train,
-                'lr': config.lr,
-                'tot_epochs': config.epochs,
-                'err_train':err_train,
-                'p_dropout': config.p_dropout}, file_path)
-  '''                
-     
-    
 
 
 if __name__ == "__main__": 
   
   config={}
-  '''
+  
   print("START")
   print(sys.argv)
   config["batch_size_train"] = int(sys.argv[1].split("=")[1])
@@ -567,30 +573,33 @@ if __name__ == "__main__":
   config["directional_loss"] = bool(int(sys.argv[4].split("=")[1]))
   config["epochs"] = int(sys.argv[5].split("=")[1])
   config["lr"] = float(sys.argv[6].split("=")[1])
-  config["p_dropout"] = float(sys.argv[7].split("=")[1])
+  config["normalize_target"] = bool(int(sys.argv[7].split("=")[1]))
+  config["p_dropout"] = float(sys.argv[8].split("=")[1])
 
   config = SimpleNamespace(**config)
   print(config)
 
   train(config)
- 
+  
 # usage 
 # python reproduce_baseline.py batch_size_train=46720 camera_params=0 bone_lengths=0 directional_loss=0 epochs=5 lr=0.001 p_dropout=0.5 
-'''
-# to debug locally
 
+# to debug locally
+'''
 config={}
 config["batch_size_train"] =46720
-config["epochs"] = 400
+config["epochs"] = 2
 config["lr"] = 0.001
 config["p_dropout"] = 0.1
 config["camera_params"] = 0
 config["bone_lengths"] =0
 config["directional_loss"] = 0
+config["normalize_target"] = 0
 config = SimpleNamespace(**config)
 print(config)
 
 train(config)
+'''
 '''
 WANDB-----------------------------
 method: grid
@@ -616,12 +625,11 @@ parameters:
   lr:
     values:
       - 0.001
+  normalize_target:
+    values:
+      - 0
   p_dropout:
     values:
       - 0.5
 program: reproduce_protocolTwo_test64_train64.py
 '''
-
-
-# 47040 SI SPACCA CON 48320
-# 46720
